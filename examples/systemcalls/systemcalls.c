@@ -1,4 +1,9 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -9,15 +14,14 @@
 */
 bool do_system(const char *cmd)
 {
+    int status = system(cmd);
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+    if (status == -1)
+    {
+        return false;
+    }
 
-    return true;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 /**
@@ -49,15 +53,27 @@ bool do_exec(int count, ...)
     // and may be removed
     command[count] = command[count];
 
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
+    int pid = fork();
+
+    //child process
+    if (pid == 0) 
+    {
+        execv(command[0], command);
+        exit(1);
+    }
+    else if (pid < 0)
+    {// Fork failed
+        va_end(args);
+        return false;
+    }
+    else
+    {//parent process
+        int status;
+        waitpid(pid, &status, 0);
+        va_end(args);
+        return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
+
 
     va_end(args);
 
@@ -80,18 +96,40 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
+   
+    if (outputfile == NULL) 
+    {
+        va_end(args);
+        return false;
+    }
+    
+    int pid = fork();
 
-
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
+    if (pid == 0) 
+    {
+        int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        if (fd < 0) 
+        {
+            va_end(args);
+            return false;
+        }
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+        execv(command[0], command);
+        exit(1);
+    }
+    else if (pid < 0)
+    {
+        va_end(args);
+        return false;
+    }
+    else
+    {
+        int status;
+        waitpid(pid, &status, 0);
+        va_end(args);
+        return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    }
 
     va_end(args);
 
