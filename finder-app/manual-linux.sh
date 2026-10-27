@@ -13,6 +13,12 @@ FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 
+#set toolchain path if not already set in the PATH
+TOOLCHAIN_BIN="$HOME/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/bin"
+if [[ ":$PATH:" != *":$TOOLCHAIN_BIN:"* ]]; then
+    export PATH="$PATH:$TOOLCHAIN_BIN"
+fi
+
 if [ $# -lt 1 ]
 then
 	echo "Using default directory ${OUTDIR} for output"
@@ -35,9 +41,12 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     git checkout ${KERNEL_VERSION}
 
     # TODO: Add your kernel build steps here
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
+    make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} Image
 fi
 
 echo "Adding the Image in outdir"
+cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}/
 
 echo "Creating the staging directory for the root filesystem"
 cd "$OUTDIR"
@@ -48,6 +57,7 @@ then
 fi
 
 # TODO: Create necessary base directories
+mkdir -p ${OUTDIR}/rootfs/{bin,sbin,etc,proc,sys,dev,usr/bin,usr/sbin,home,home/conf,tmp,root,lib,lib64}
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
@@ -56,25 +66,74 @@ git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
     # TODO:  Configure busybox
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
 else
     cd busybox
 fi
 
 # TODO: Make and install busybox
+make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
+make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX=${OUTDIR}/rootfs install
 
 echo "Library dependencies"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
-
 # TODO: Add library dependencies to rootfs
+SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
+INTERPRETER=$(${CROSS_COMPILE}readelf -l busybox | sed -n 's/.*interpreter: \(.*\)]/\1/p')
+
+# Add BusyBox's ELF interpreter and shared libraries to the rootfs.
+SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
+DEST="${OUTDIR}/rootfs/lib"
+mkdir -p "$DEST"
+
+INTERPRETER=$(
+    ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox |
+        sed -n 's/.*interpreter: \(.*\)]/\1/p'
+)
+
+if [ -n "$INTERPRETER" ]; then
+    if [ ! -f "${SYSROOT}${INTERPRETER}" ]; then
+        echo "Interpreter not found in sysroot: ${SYSROOT}${INTERPRETER}" >&2
+        exit 1
+    fi
+    cp -L "${SYSROOT}${INTERPRETER}" "$DEST/"
+fi
+
+${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox |
+    sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p' |
+    while IFS= read -r LIBRARY; do
+        LIBRARY_PATH=$(find "$SYSROOT" -name "$LIBRARY" -print -quit)
+
+        if [ -z "$LIBRARY_PATH" ]; then
+            echo "Library not found in sysroot: $LIBRARY" >&2
+            exit 1
+        fi
+
+        cp -L "$LIBRARY_PATH" "$DEST/$LIBRARY"
+    done
+
+cp -r ${OUTDIR}/rootfs/lib/* ${OUTDIR}/rootfs/lib64/
 
 # TODO: Make device nodes
+sudo mknod -m 622 ${OUTDIR}/rootfs/dev/console c 5 1
+sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
 
 # TODO: Clean and build the writer utility
+# sudo make -C ${FINDER_APP_DIR} clean
+# sudo make -C ${FINDER_APP_DIR} CROSS_COMPILE=${CROSS_COMPILE}
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
+sudo cp ${FINDER_APP_DIR}/writer ${OUTDIR}/rootfs/home/writer
+sudo cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
+sudo cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
+#sudo sed 's|cat ../conf/assignment.txt|cat /conf/assignment.txt|' ${FINDER_APP_DIR}/finder-test.sh > ${OUTDIR}/rootfs/home/finder-test.sh
+sudo cp ${FINDER_APP_DIR}/conf/username.txt ${OUTDIR}/rootfs/home/conf/username.txt
+sudo cp ${FINDER_APP_DIR}/conf/assignment.txt ${OUTDIR}/rootfs/home/conf/assignment.txt
+sudo cp ${FINDER_APP_DIR}/autorun-qemu.sh ${OUTDIR}/rootfs/home
 
 # TODO: Chown the root directory
+sudo chown -R root:root ${OUTDIR}/rootfs
 
 # TODO: Create initramfs.cpio.gz
+sudo cd ${OUTDIR}/rootfs
+sudo find . -print0 | sudo cpio --null -ov --format=newc | gzip -9 > ${OUTDIR}/initramfs.cpio.gz
