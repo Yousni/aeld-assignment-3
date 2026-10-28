@@ -14,10 +14,8 @@ ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
 
 #set toolchain path if not already set in the PATH
-TOOLCHAIN_BIN="$HOME/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/bin"
-if [[ ":$PATH:" != *":$TOOLCHAIN_BIN:"* ]]; then
-    export PATH="$PATH:$TOOLCHAIN_BIN"
-fi
+TOOLCHAIN_BIN="/home/yousnim/arm-gnu-toolchain-13.3.rel1-x86_64-aarch64-none-linux-gnu/bin"
+export PATH="$PATH:$TOOLCHAIN_BIN"
 
 if [ $# -lt 1 ]
 then
@@ -57,7 +55,7 @@ then
 fi
 
 # TODO: Create necessary base directories
-mkdir -p ${OUTDIR}/rootfs/{bin,sbin,etc,proc,sys,dev,usr/bin,usr/sbin,home,home/conf,tmp,root,lib,lib64}
+mkdir -p ${OUTDIR}/rootfs/{var/log,bin,sbin,etc,proc,sys,dev,usr/bin,usr/sbin,usr/lib,home,home/conf,tmp,root,lib,lib64}
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
@@ -73,7 +71,7 @@ fi
 
 # TODO: Make and install busybox
 make -j$(nproc) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
-make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CONFIG_PREFIX=${OUTDIR}/rootfs install
+make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install
 
 echo "Library dependencies"
 # TODO: Add library dependencies to rootfs
@@ -82,8 +80,11 @@ INTERPRETER=$(${CROSS_COMPILE}readelf -l busybox | sed -n 's/.*interpreter: \(.*
 
 # Add BusyBox's ELF interpreter and shared libraries to the rootfs.
 SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
-DEST="${OUTDIR}/rootfs/lib"
-mkdir -p "$DEST"
+DEST_INTER="${OUTDIR}/rootfs/lib"
+mkdir -p "$DEST_INTER"
+
+DEST_SHARED_LIB="${OUTDIR}/rootfs/lib64"
+mkdir -p "$DEST_SHARED_LIB"
 
 INTERPRETER=$(
     ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox |
@@ -95,7 +96,7 @@ if [ -n "$INTERPRETER" ]; then
         echo "Interpreter not found in sysroot: ${SYSROOT}${INTERPRETER}" >&2
         exit 1
     fi
-    cp -L "${SYSROOT}${INTERPRETER}" "$DEST/"
+    cp -L "${SYSROOT}${INTERPRETER}" "$DEST_INTER/"
 fi
 
 ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox |
@@ -108,25 +109,24 @@ ${CROSS_COMPILE}readelf -a ${OUTDIR}/rootfs/bin/busybox |
             exit 1
         fi
 
-        cp -L "$LIBRARY_PATH" "$DEST/$LIBRARY"
+        cp -L "$LIBRARY_PATH" "$DEST_SHARED_LIB"
     done
 
-cp -r ${OUTDIR}/rootfs/lib/* ${OUTDIR}/rootfs/lib64/
 
 # TODO: Make device nodes
-sudo mknod -m 622 ${OUTDIR}/rootfs/dev/console c 5 1
+sudo mknod -m 666 ${OUTDIR}/rootfs/dev/console c 5 1
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
 
 # TODO: Clean and build the writer utility
-# sudo make -C ${FINDER_APP_DIR} clean
-# sudo make -C ${FINDER_APP_DIR} CROSS_COMPILE=${CROSS_COMPILE}
+make -C ${FINDER_APP_DIR} clean
+make -C ${FINDER_APP_DIR} CROSS_COMPILE=${CROSS_COMPILE}
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
 sudo cp ${FINDER_APP_DIR}/writer ${OUTDIR}/rootfs/home/writer
 sudo cp ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
 sudo cp ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
-#sudo sed 's|cat ../conf/assignment.txt|cat /conf/assignment.txt|' ${FINDER_APP_DIR}/finder-test.sh > ${OUTDIR}/rootfs/home/finder-test.sh
+sudo sed 's|cat ../conf/assignment.txt|cat conf/assignment.txt|' ${FINDER_APP_DIR}/finder-test.sh > ${OUTDIR}/rootfs/home/finder-test.sh
 sudo cp ${FINDER_APP_DIR}/conf/username.txt ${OUTDIR}/rootfs/home/conf/username.txt
 sudo cp ${FINDER_APP_DIR}/conf/assignment.txt ${OUTDIR}/rootfs/home/conf/assignment.txt
 sudo cp ${FINDER_APP_DIR}/autorun-qemu.sh ${OUTDIR}/rootfs/home
@@ -135,5 +135,6 @@ sudo cp ${FINDER_APP_DIR}/autorun-qemu.sh ${OUTDIR}/rootfs/home
 sudo chown -R root:root ${OUTDIR}/rootfs
 
 # TODO: Create initramfs.cpio.gz
-sudo cd ${OUTDIR}/rootfs
-sudo find . -print0 | sudo cpio --null -ov --format=newc | gzip -9 > ${OUTDIR}/initramfs.cpio.gz
+cd ${OUTDIR}/rootfs
+find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
+gzip -f ${OUTDIR}/initramfs.cpio
